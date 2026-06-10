@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>CIDADE.io</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!-- Game canvas -->
+    <canvas id="game"></canvas>
+    <div id="vignette"></div>
+
+    <!-- HUD (visible while playing) -->
+    <div id="hud" class="hidden">
+      <div id="topbar">
+        <div id="matchInfo">
+          <span id="clock">6:00</span>
+          <span class="sep">·</span>
+          <span id="nextEvent">Próxima eleição</span>
+        </div>
+        <div id="myStats"></div>
+      </div>
+
+      <button id="muteBtn" type="button" title="Som" aria-label="Som">🔊</button>
+
+      <div id="leaderboard"></div>
+
+      <div id="banner" class="hidden"></div>
+
+      <!-- Contextual action hint pill (color-coded; readable on mobile) -->
+      <div id="actionHint" class="hidden">
+        <span id="actionHintDot" class="hint-dot"></span>
+        <span id="actionHintText"></span>
+      </div>
+
+      <!-- Level / XP badge -->
+      <div id="levelBadge">
+        <span id="levelNum">Nv. 1</span>
+        <div id="xpBar"><div id="xpFill"></div></div>
+      </div>
+
+      <!-- Desktop action slot with cooldown overlay -->
+      <div id="abilityBar">
+        <div id="abilitySlot" class="ability-slot" title="Ação contextual">
+          <div id="abVerb" class="ab-verb">AÇÃO</div>
+          <div class="ab-key">E / clique</div>
+          <div id="abCd" class="ab-cd hidden"></div>
+        </div>
+      </div>
+
+      <!-- Mobile controls -->
+      <div id="joystick" class="hidden">
+        <div id="joyBase"><div id="joyKnob"></div></div>
+      </div>
+      <button id="actionBtn" class="hidden" type="button">
+        <span id="actionBtnLabel">AÇÃO</span>
+        <div id="actionBtnCd" class="btn-cd hidden"></div>
+      </button>
+    </div>
+
+    <!-- Full-screen decree announcement -->
+    <div id="decreeAnnounce" class="hidden">
+      <div class="da-inner">
+        <div class="da-bolt">⚡</div>
+        <div id="daText" class="da-text"></div>
+        <div id="daDesc" class="da-desc"></div>
+      </div>
+    </div>
+
+    <!-- Start / lobby menu -->
+    <div id="startScreen" class="overlay">
+      <div class="card menu-card">
+        <div class="wordmark"><span class="wm-cidade">CIDADE</span><span class="wm-io">.io</span></div>
+        <p class="tagline">
+          Construa, sabote, repare — e dispute a Prefeitura. A cada eleição, o
+          povo decide quem manda.
+        </p>
+        <input id="nameInput" type="text" maxlength="18" placeholder="Seu nome" autocomplete="off" />
+        <div class="menu-actions">
+          <button id="quickBtn" type="button" class="cta">Partida rápida</button>
+          <div class="menu-row">
+            <button id="createBtn" type="button" class="secondary">Criar sala</button>
+            <button id="joinToggleBtn" type="button" class="secondary">Entrar em sala</button>
+          </div>
+          <button id="soloBtn" type="button" class="ghost">Treinar com bots (solo)</button>
+        </div>
+        <div id="joinRow" class="join-row hidden">
+          <input id="codeInput" type="text" maxlength="6" placeholder="CÓDIGO" autocomplete="off" />
+          <button id="joinBtn" type="button">Entrar</button>
+        </div>
+        <p id="menuError" class="error"></p>
+        <p class="hint">
+          Mover: <b>WASD</b> / setas (ou arraste no celular). Ação: <b>E</b> /
+          clique / botão — ela muda conforme o quarteirão mais perto:
+          <span class="k-dom">dominar</span>, <span class="k-sab">sabotar</span>
+          ou <span class="k-rep">reparar</span>.
+        </p>
+      </div>
+    </div>
+
+    <!-- Waiting room -->
+    <div id="lobbyScreen" class="overlay hidden">
+      <div class="card wide lobby-card">
+        <h2 class="neon-cyan">Sala de espera</h2>
+        <p class="subtle">Compartilhe o código para chamar a galera.</p>
+        <button id="codeBox" type="button" class="code-box" title="Toque para copiar">
+          <span id="roomCode" class="code-value">—</span>
+          <span class="code-copy">toque para copiar</span>
+        </button>
+        <p id="copyStatus" class="subtle copy-status"></p>
+        <div class="count-pill"><span id="playerCount">0 / 8</span></div>
+        <div id="lobbyPlayers"></div>
+        <div class="end-actions">
+          <button id="startBtn" type="button" class="cta">Começar</button>
+          <button id="leaveBtn" type="button" class="ghost">Sair</button>
+        </div>
+        <p id="lobbyHint" class="subtle"></p>
+      </div>
+    </div>
+
+    <!-- Election overlay -->
+    <div id="electionScreen" class="overlay election hidden">
+      <div class="card wide election-card">
+        <div class="election-kicker">URNAS ABERTAS</div>
+        <h2 id="electionTitle" class="election-title">Eleição</h2>
+        <div id="electionTimer" class="election-timer">12</div>
+        <p class="subtle">Vote no próximo Prefeito. Todo voto é apurado.</p>
+        <div id="candidates"></div>
+        <p id="electionHint" class="election-hint">
+          Poderes em jogo: Distribuição de Renda · Apagão Estratégico · Imunidade
+          Municipal · Mutirão de Reparo
+        </p>
+        <p id="voteStatus" class="subtle"></p>
+      </div>
+    </div>
+
+    <!-- Decree choice overlay (mayor only) -->
+    <div id="decreeScreen" class="overlay hidden">
+      <div class="card wide">
+        <div class="election-kicker gold">VOCÊ VENCEU A ELEIÇÃO</div>
+        <h2 class="neon-yellow">Você é o Prefeito!</h2>
+        <div id="decreeTimer" class="election-timer">10</div>
+        <p class="subtle">Escolha um decreto. Ele afeta toda a cidade.</p>
+        <div id="decreeOptions"></div>
+      </div>
+    </div>
+
+    <!-- Level-up overlay (lightweight, non-blocking pick) -->
+    <div id="levelupScreen" class="overlay corner hidden">
+      <div class="card levelup">
+        <h3 id="levelupTitle">Subiu de nível!</h3>
+        <p class="subtle">Escolha uma melhoria:</p>
+        <div id="upgradeOptions"></div>
+      </div>
+    </div>
+
+    <!-- Result flash -->
+    <div id="resultFlash" class="flash hidden"></div>
+
+    <!-- End screen (shareable artifact) -->
+    <div id="endScreen" class="overlay hidden">
+      <div class="card wide end-card" id="endCard">
+        <div class="end-head">
+          <div class="wordmark small"><span class="wm-cidade">CIDADE</span><span class="wm-io">.io</span></div>
+          <div class="end-sub">crônica da partida</div>
+        </div>
+        <div id="finalRanking"></div>
+        <h3 class="neon-yellow">A história desta cidade</h3>
+        <pre id="story" class="story"></pre>
+        <div class="end-watermark">CIDADE.io</div>
+        <div class="end-actions">
+          <button id="shareBtn" type="button" class="cta">Compartilhar história</button>
+          <span id="shareStatus" class="subtle"></span>
+        </div>
+        <p class="subtle" id="restartNote"></p>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="client.js"></script>
+  </body>
+</html>

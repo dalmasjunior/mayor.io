@@ -1,0 +1,18 @@
+{
+  "name": "cidade-mvp",
+  "version": "0.1.0",
+  "description": "CIDADE.io MVP - real-multiplayer .io-style game with recurring elections and decrees.",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.2.1",
+    "socket.io": "^4.8.3"
+  }
+}

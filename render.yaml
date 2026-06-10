@@ -1,0 +1,23 @@
+# Render blueprint for the CIDADE.io MVP (Node web service).
+# Docs: https://render.com/docs/blueprint-spec
+# Render auto-injects PORT; the server reads process.env.PORT and binds 0.0.0.0.
+services:
+  - type: web
+    name: cidade-mvp
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Optional gameplay tuning (safe defaults are baked into server.js):
+      # - key: ROUND_PLAY_MS
+      #   value: "70000"
+      # - key: MATCH_MS
+      #   value: "360000"
+      # - key: XP_BASE
+      #   value: "30"
