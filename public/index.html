@@ -28,8 +28,15 @@
           <span class="sep">·</span>
           <span id="nextEvent">Próxima eleição</span>
         </div>
+        <div id="scoreRow">
+          <span id="scoreMain"></span>
+          <button id="scoreInfoBtn" type="button" class="score-info-btn" title="Como ganhar pontos" aria-label="Como ganhar pontos">?</button>
+        </div>
+        <div id="passiveIncome" class="passive-income"></div>
         <div id="myStats"></div>
+        <div id="scoreBreakdown" class="score-breakdown hidden" aria-live="polite"></div>
       </div>
+      <div id="toastStack" aria-live="polite"></div>
 
       <button id="muteBtn" type="button" title="Som" aria-label="Som">🔊</button>
 
@@ -141,6 +148,7 @@
           Municipal · Mutirão de Reparo
         </p>
         <p id="voteStatus" class="subtle"></p>
+        <p class="lock-hint">🔒 Movimento travado durante a eleição</p>
       </div>
     </div>
 
@@ -152,6 +160,16 @@
         <div id="decreeTimer" class="election-timer">10</div>
         <p class="subtle">Escolha um decreto. Ele afeta toda a cidade.</p>
         <div id="decreeOptions"></div>
+      </div>
+    </div>
+
+    <!-- Decree-waiting overlay (everyone who is NOT the mayor) -->
+    <div id="decreeWaitScreen" class="overlay hidden">
+      <div class="card">
+        <div class="election-kicker gold">DECRETO MUNICIPAL</div>
+        <div class="wait-spinner">⏳</div>
+        <p id="decreeWaitText" class="decree-wait-text">O Prefeito está escolhendo o decreto...</p>
+        <p class="lock-hint">🔒 Todos congelados até o decreto sair</p>
       </div>
     </div>
 

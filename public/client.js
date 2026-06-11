@@ -19,6 +19,7 @@
   const lobbyScreen = $('lobbyScreen');
   const electionScreen = $('electionScreen');
   const decreeScreen = $('decreeScreen');
+  const decreeWaitScreen = $('decreeWaitScreen');
   const levelupScreen = $('levelupScreen');
   const endScreen = $('endScreen');
   const hud = $('hud');
@@ -48,9 +49,19 @@
   let camera = { x: 0, y: 0 };
   let currentAction = { type: 'none' };
 
+  // Score constants — mirror server.js (display / UX only; server stays authoritative)
+  const SCORE = {
+    RESOURCE: 5,
+    DOMINATE: 15,
+    SABOTAGE: 20,
+    REPAIR: 12,
+    REPAIR_CRISIS: 6,
+    TRICKLE_PER_TILE: 2,
+  };
+
   // juice trackers
   let prevSelf = null; // { score, built, hacked, repaired }
-  let prevTileOwners = new Map(); // tileId -> ownerId
+  let prevTileState = new Map(); // tileId -> { ownerId, disabled }
   const floaters = []; // floating texts
   const particles = [];
   const flashes = []; // tile claim rings
@@ -117,10 +128,17 @@
   refreshMuteBtn();
   $('muteBtn').addEventListener('click', () => { Sound.toggle(); Sound.resume(); refreshMuteBtn(); });
 
+  let scoreBreakdownOpen = false;
+  $('scoreInfoBtn').addEventListener('click', () => {
+    scoreBreakdownOpen = !scoreBreakdownOpen;
+    $('scoreBreakdown').classList.toggle('hidden', !scoreBreakdownOpen);
+    $('scoreInfoBtn').classList.toggle('active', scoreBreakdownOpen);
+  });
+
   function getName() { return $('nameInput').value; }
 
   function showOnly(screen) {
-    [startScreen, lobbyScreen, electionScreen, decreeScreen, endScreen].forEach((s) =>
+    [startScreen, lobbyScreen, electionScreen, decreeScreen, decreeWaitScreen, endScreen].forEach((s) =>
       s.classList.add('hidden')
     );
     if (screen) screen.classList.remove('hidden');
@@ -209,7 +227,7 @@
     world = d.world;
     inGame = true;
     prevSelf = null;
-    prevTileOwners = new Map();
+    prevTileState = new Map();
     floaters.length = 0; particles.length = 0; flashes.length = 0;
     shakeMag = 0;
     showOnly(null);
@@ -228,8 +246,22 @@
     detectEvents(snap);
     updateHud(snap);
     const voting = snap.phase === 'voting';
+    const decree = snap.phase === 'decree';
     electionScreen.classList.toggle('hidden', !voting);
-    vignette.classList.toggle('dramatic', voting || snap.phase === 'decree');
+    vignette.classList.toggle('dramatic', voting || decree);
+
+    // Decree phase: the mayor sees the choice screen (via decree:choose);
+    // everyone else (incl. a human when a bot is mayor) sees a waiting overlay.
+    // Movement is frozen server-side throughout, so this makes the lock visible.
+    const iAmMayor = snap.mayorId === selfId;
+    if (decree && !iAmMayor) {
+      const mayor = snap.players.find((p) => p.id === snap.mayorId);
+      $('decreeWaitText').textContent =
+        `👑 ${mayor ? mayor.name : 'O Prefeito'} está escolhendo o decreto...`;
+      decreeWaitScreen.classList.remove('hidden');
+    } else {
+      decreeWaitScreen.classList.add('hidden');
+    }
   });
 
   socket.on('election:start', (data) => {
@@ -402,41 +434,120 @@
   }
 
   // ---- Juice: detect events from snapshot deltas ----
+  function countOwnedTiles(snap, playerId) {
+    let n = 0;
+    for (const t of snap.tiles) {
+      if (t.ownerId === playerId && !t.disabled) n++;
+    }
+    return n;
+  }
+
+  function showScoreToast(msg, color) {
+    const stack = $('toastStack');
+    const el = document.createElement('div');
+    el.className = 'score-toast';
+    el.style.borderColor = color || '#2ee6d6';
+    el.textContent = msg;
+    stack.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('show'));
+    setTimeout(() => {
+      el.classList.remove('show');
+      setTimeout(() => el.remove(), 280);
+    }, 2200);
+    while (stack.children.length > 4) stack.firstChild.remove();
+  }
+
   function detectEvents(snap) {
     const me = snap.players.find((p) => p.id === selfId);
-    if (me) {
-      if (prevSelf) {
-        const dBuilt = me.built - prevSelf.built;
-        const dHack = me.hacked - prevSelf.hacked;
-        const dRep = me.repaired - prevSelf.repaired;
-        const dScore = Math.round(me.score) - Math.round(prevSelf.score);
-        if (dBuilt > 0) { Sound.dominar(); burst(me.x, me.y, ACT.dom.color, 12); }
-        if (dHack > 0) { Sound.sabotar(); burst(me.x, me.y, ACT.sab.color, 16); shake(7); }
-        if (dRep > 0) { Sound.reparar(); burst(me.x, me.y, ACT.rep.color, 12); }
-        if (dScore > 0) {
-          const color = dHack > 0 ? ACT.sab.color : dBuilt > 0 ? ACT.dom.color : dRep > 0 ? ACT.rep.color : '#2ee6d6';
-          if (dScore <= 6 && dBuilt === 0 && dHack === 0 && dRep === 0) Sound.collect();
-          addFloater(me.x, me.y - 24, `+${dScore}`, color);
+    const newClaims = [];
+    const repairedTiles = [];
+    const sabbedTiles = [];
+
+    for (const t of snap.tiles) {
+      const prev = prevTileState.get(t.id);
+      if (prev !== undefined) {
+        if (prev.ownerId !== t.ownerId) {
+          if (t.ownerId === selfId) newClaims.push(t);
+          if (prev.ownerId === selfId && t.ownerId !== selfId) {
+            shake(9);
+            Sound.hit();
+            addFloater(t.cx, t.cy, 'SABOTADO!', ACT.sab.color);
+          }
+          if (t.ownerId) {
+            const owner = snap.players.find((p) => p.id === t.ownerId);
+            flashes.push({ cx: t.cx, cy: t.cy, ttl: 0.5, max: 0.5, color: owner ? owner.color : '#fff' });
+          }
         }
+        if (prev.disabled && !t.disabled) repairedTiles.push(t);
+        if (prev.ownerId && !t.ownerId && t.disabled && !prev.disabled) sabbedTiles.push(t);
       }
-      prevSelf = { score: me.score, built: me.built, hacked: me.hacked, repaired: me.repaired };
+      prevTileState.set(t.id, { ownerId: t.ownerId, disabled: t.disabled });
     }
 
-    // tile ownership changes -> claim flash + detect being sabotaged
-    for (const t of snap.tiles) {
-      const prev = prevTileOwners.has(t.id) ? prevTileOwners.get(t.id) : undefined;
-      if (prev !== undefined && prev !== t.ownerId) {
-        if (t.ownerId) {
-          const owner = snap.players.find((p) => p.id === t.ownerId);
-          flashes.push({ cx: t.cx, cy: t.cy, ttl: 0.5, max: 0.5, color: owner ? owner.color : '#fff' });
-        }
-        if (prev === selfId && t.ownerId !== selfId) {
-          // one of my tiles got taken / disabled
-          shake(9); Sound.hit();
-          addFloater(t.cx, t.cy, 'SABOTADO!', ACT.sab.color);
+    if (me && prevSelf) {
+      const dBuilt = me.built - prevSelf.built;
+      const dHack = me.hacked - prevSelf.hacked;
+      const dRep = me.repaired - prevSelf.repaired;
+      const dScoreR = Math.round(me.score) - Math.round(prevSelf.score);
+
+      if (dBuilt > 0) {
+        Sound.dominar();
+        const targets = newClaims.length ? newClaims : (currentAction.tile ? [currentAction.tile] : []);
+        for (let i = 0; i < dBuilt; i++) {
+          const tile = targets[i] || targets[0];
+          if (!tile) continue;
+          burst(tile.cx, tile.cy, ACT.dom.color, 12);
+          const label = `+${SCORE.DOMINATE} DOMINAR`;
+          addFloater(tile.cx, tile.cy - 20, label, ACT.dom.color);
+          showScoreToast(label, ACT.dom.color);
         }
       }
-      prevTileOwners.set(t.id, t.ownerId);
+
+      if (dHack > 0) {
+        Sound.sabotar();
+        shake(7);
+        const tile = sabbedTiles[0] || currentAction.tile;
+        if (tile) {
+          burst(tile.cx, tile.cy, ACT.sab.color, 16);
+          const stolen = Math.max(0, dScoreR - SCORE.SABOTAGE);
+          const sabLabel = `+${SCORE.SABOTAGE} SABOTAR`;
+          addFloater(tile.cx, tile.cy - 20, sabLabel, ACT.sab.color);
+          showScoreToast(sabLabel, ACT.sab.color);
+          if (stolen > 0) {
+            const stealLabel = `+${stolen} ROUBO`;
+            addFloater(tile.cx, tile.cy - 44, stealLabel, ACT.sab.color);
+            showScoreToast(stealLabel, ACT.sab.color);
+          }
+        }
+      }
+
+      if (dRep > 0) {
+        Sound.reparar();
+        const tile = repairedTiles[0] || currentAction.tile;
+        const pts = dScoreR >= SCORE.REPAIR - 1 ? SCORE.REPAIR : SCORE.REPAIR_CRISIS;
+        if (tile) {
+          burst(tile.cx, tile.cy, ACT.rep.color, 12);
+          const label = `+${pts} REPARAR`;
+          addFloater(tile.cx, tile.cy - 20, label, ACT.rep.color);
+          showScoreToast(label, ACT.rep.color);
+        }
+      }
+
+      // Resource pickup only — passive trickle never spawns floaters (fixes player trail).
+      if (dBuilt === 0 && dHack === 0 && dRep === 0 && dScoreR > 0) {
+        const mult = snap.decree && snap.decree.id === 'renda' ? 2 : 1;
+        const expected = SCORE.RESOURCE * mult;
+        if (dScoreR === expected) {
+          Sound.collect();
+          const label = `+${expected} COLETA`;
+          addFloater(me.x, me.y - 24, label, '#2ee6d6');
+          showScoreToast(label, '#2ee6d6');
+        }
+      }
+
+      prevSelf = { score: me.score, built: me.built, hacked: me.hacked, repaired: me.repaired };
+    } else if (me) {
+      prevSelf = { score: me.score, built: me.built, hacked: me.hacked, repaired: me.repaired };
     }
   }
 
@@ -474,8 +585,15 @@
 
     const me = snap.players.find((p) => p.id === selfId);
     if (me) {
+      const owned = countOwnedTiles(snap, selfId);
+      const passiveRate = owned * SCORE.TRICKLE_PER_TILE;
+      $('scoreMain').textContent = `${Math.round(me.score)} pts`;
+      $('passiveIncome').textContent = owned > 0
+        ? `Renda passiva: +${passiveRate}/s · ${owned} quarteirão${owned === 1 ? '' : 's'}`
+        : 'Renda passiva: domine quarteirões (+2/s cada)';
       $('myStats').textContent =
-        `${Math.round(me.score)} pts · ${me.identity} · 🏗️${me.built} ⚔️${me.hacked} 🔧${me.repaired}`;
+        `${me.identity} · 🏗️${me.built} ⚔️${me.hacked} 🔧${me.repaired}`;
+      renderScoreBreakdown(snap, owned, passiveRate);
       $('levelNum').textContent = `Nv. ${me.level}`;
       const pct = me.xpToNext ? Math.min(100, (me.xp / me.xpToNext) * 100) : 0;
       $('xpFill').style.width = `${pct}%`;
@@ -494,6 +612,25 @@
       banner.classList.remove('hidden');
     } else {
       banner.classList.add('hidden');
+    }
+  }
+
+  function renderScoreBreakdown(snap, owned, passiveRate) {
+    const panel = $('scoreBreakdown');
+    panel.textContent = '';
+    const rendaMult = snap.decree && snap.decree.id === 'renda' ? 2 : 1;
+    const lines = [
+      `Coleta (recurso): +${SCORE.RESOURCE * rendaMult} pts`,
+      `Dominar quarteirão: +${SCORE.DOMINATE} pts`,
+      `Sabotar quarteirão: +${SCORE.SABOTAGE} pts (+ roubo com upgrade)`,
+      `Reparar quarteirão: +${SCORE.REPAIR} pts (+${SCORE.REPAIR_CRISIS} na crise própria)`,
+      `Renda passiva: +${SCORE.TRICKLE_PER_TILE}/s por quarteirão dominado (agora +${passiveRate}/s)`,
+    ];
+    for (const line of lines) {
+      const row = document.createElement('div');
+      row.className = 'sb-row';
+      row.textContent = line;
+      panel.appendChild(row);
     }
   }
 
@@ -670,6 +807,7 @@
   function renderEndScreen(data) {
     electionScreen.classList.add('hidden');
     decreeScreen.classList.add('hidden');
+    decreeWaitScreen.classList.add('hidden');
     levelupScreen.classList.add('hidden');
     $('decreeAnnounce').classList.add('hidden');
 

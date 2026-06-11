@@ -264,6 +264,86 @@ button.small { padding: 7px 12px; font-size: 13px; }
 .sep { color: var(--muted); margin: 0 8px; }
 #myStats { color: var(--muted); font-size: 12px; }
 
+#scoreRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+#scoreMain {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--yellow);
+}
+.score-info-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.score-info-btn.active,
+.score-info-btn:hover {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+.passive-income {
+  font-size: 11px;
+  color: var(--cyan);
+  font-family: var(--mono);
+}
+.score-breakdown {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--line);
+  text-align: left;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+  max-width: 320px;
+}
+.score-breakdown .sb-row + .sb-row { margin-top: 3px; }
+
+#toastStack {
+  position: fixed;
+  top: 88px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 24;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  max-width: 92vw;
+}
+.score-toast {
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(8, 10, 18, 0.92);
+  border: 1px solid var(--cyan);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.score-toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 #muteBtn {
   position: fixed;
   top: 12px;
@@ -583,6 +663,33 @@ button.small { padding: 7px 12px; font-size: 13px; }
   line-height: 1.5;
 }
 
+.lock-hint {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 12px;
+  letter-spacing: 1px;
+}
+
+/* Decree-waiting overlay (non-mayor players, while frozen) */
+.wait-spinner {
+  font-size: 46px;
+  margin: 6px 0 8px;
+  display: inline-block;
+  animation: waitSpin 2.4s linear infinite;
+}
+@keyframes waitSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+.decree-wait-text {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--yellow);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
 /* ---------- Decree full-screen announcement ---------- */
 #decreeAnnounce {
   position: fixed;
@@ -770,7 +877,10 @@ button.small { padding: 7px 12px; font-size: 13px; }
   #leaderboard .lb-rep { display: none; }
   #topbar { top: 8px; padding: 6px 12px; font-size: 12px; max-width: 60vw; }
   #clock { font-size: 15px; }
+  #scoreMain { font-size: 14px; }
   #myStats { font-size: 10px; }
+  .passive-income { font-size: 10px; }
+  #toastStack { top: 72px; }
   #banner { top: 56px; font-size: 12px; padding: 6px 12px; }
   #actionHint { bottom: 162px; font-size: 14px; padding: 7px 14px; }
   /* on touch, the big action button replaces the desktop slot */

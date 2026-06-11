@@ -69,6 +69,17 @@ const POINTS_SABOTAGE = 20;
 const POINTS_REPAIR = 12;
 const TRICKLE_PER_TILE = 2; // points/sec per owned tile
 
+// "Sabotador Profissional" steal upgrade tuning. Was 0.25/stack and uncapped,
+// which let sabotage out-scale everything by transferring a % of a leader's
+// whole score per hit. Conservatively reduced + capped (see README balance note).
+const STEAL_FRAC_PER_STACK = 0.15;
+const STEAL_CAP = 60; // absolute cap on points stolen per sabotage
+
+// Bot difficulty dial (0..1): scales action cadence + targeting accuracy.
+// Solo/bots mode is a touch easier so a lone human can compete and have fun.
+const BOT_AGGRO_DEFAULT = 0.85;
+const BOT_AGGRO_SOLO = 0.7;
+
 const SABOTAGE_DISABLE_MS = 8000; // a sabotaged tile is disabled this long
 const REPAIR_SHIELD_MS = 12000; // "repaired area is immune" upgrade duration
 
@@ -103,6 +114,16 @@ const BOT_NAMES = [
   'Rato', 'Vera', 'Pingo', 'Sol', 'Fá', 'Gigi', 'Tom', 'Mara',
 ];
 
+// Bot "personas" give each bot a coherent tendency (targeting + upgrade picks),
+// so they read like players rather than random walkers.
+const BOT_PERSONAS = ['builder', 'saboteur', 'tech', 'collector'];
+const PERSONA_UPGRADES = {
+  builder: ['multidom', 'range', 'speed'],
+  saboteur: ['steal', 'range', 'speed'],
+  tech: ['repairshield', 'cooldown', 'range'],
+  collector: ['speed', 'cooldown', 'range'],
+};
+
 const DECREES = [
   { id: 'renda', name: 'Distribuição de Renda', desc: 'Todos os recursos valem 2x para todo mundo.' },
   { id: 'apagao_estrategico', name: 'Apagão Estratégico', desc: 'Desabilita os quarteirões do 2º colocado.' },
@@ -115,7 +136,7 @@ const DECREES = [
 const UPGRADES = [
   { id: 'range', name: 'Raio de Ação', desc: '+45 de alcance da ação.', max: 3 },
   { id: 'multidom', name: 'Dominação em Massa', desc: 'Dominar também toma um quarteirão vizinho livre.', max: 1 },
-  { id: 'steal', name: 'Sabotador Profissional', desc: 'Sabotar rouba 25% dos pontos do dono.', max: 2 },
+  { id: 'steal', name: 'Sabotador Profissional', desc: 'Sabotar rouba 15% dos pontos do dono (até +60).', max: 2 },
   { id: 'repairshield', name: 'Engenharia Resiliente', desc: 'O que você repara fica imune por um tempo.', max: 1 },
   { id: 'speed', name: 'Pé-de-Vento', desc: '+12% de velocidade de movimento.', max: 3 },
   { id: 'cooldown', name: 'Reflexos Rápidos', desc: '-15% no tempo de recarga da ação.', max: 1 },
@@ -131,6 +152,7 @@ function makeRoom(code, opts = {}) {
   return {
     code,
     solo: !!opts.solo,
+    botAggro: opts.solo ? BOT_AGGRO_SOLO : BOT_AGGRO_DEFAULT,
     hostId: null,
     players: new Map(), // id -> player
     resources: [],
@@ -224,8 +246,8 @@ function makePlayer(id, name, isBot) {
     currentOffer: null, // { choices:[{id,name,desc}] } awaiting a pick
     offerQueue: [],
     // bot AI
-    botTargetX: rand(0, WORLD_W),
-    botTargetY: rand(0, WORLD_H),
+    botPersona: null,
+    botGoal: null,
     botRetargetAt: 0,
     botActAt: 0,
   };
@@ -348,7 +370,10 @@ function addBot(room) {
   let guard = 0;
   while (used.has(name) && guard++ < 40) name = BOT_NAMES[Math.floor(rand(0, BOT_NAMES.length))];
   if (used.has(name)) name = `${name}${room.botSeq}`;
-  room.players.set(id, makePlayer(id, name, true));
+  const bot = makePlayer(id, name, true);
+  bot.botPersona = BOT_PERSONAS[Math.floor(rand(0, BOT_PERSONAS.length))];
+  bot.botActAt = Date.now() + rand(800, 3000); // stagger so they don't act in lockstep
+  room.players.set(id, bot);
 }
 
 function topUpBots(room) {
@@ -360,36 +385,115 @@ function topUpBots(room) {
   }
 }
 
+function nearestResource(room, p) {
+  let best = Infinity, res = null;
+  for (const r of room.resources) {
+    if (!r.active) continue;
+    const d = (r.x - p.x) ** 2 + (r.y - p.y) ** 2;
+    if (d < best) { best = d; res = r; }
+  }
+  return res;
+}
+
+function tileImmune(room, t, now) {
+  return (
+    (room.decree && room.decree.id === 'imunidade' && t.ownerId === room.decree.mayorId) ||
+    (t.shieldUntil && now < t.shieldUntil)
+  );
+}
+
+function nearestTile(room, p, pred) {
+  let best = Infinity, tile = null;
+  for (const t of room.tiles) {
+    if (!pred(t)) continue;
+    const d = (t.cx - p.x) ** 2 + (t.cy - p.y) ** 2;
+    if (d < best) { best = d; tile = t; }
+  }
+  return tile;
+}
+
+// Pick a coherent goal for a bot based on its persona + the current game state.
+function chooseBotGoal(room, p, now) {
+  const aggro = room.botAggro;
+  // imperfect play: sometimes just grab a resource or wander (feels human, eases solo)
+  if (Math.random() > aggro) {
+    const r = nearestResource(room, p);
+    if (r && Math.random() < 0.6) return { kind: 'resource', ref: r };
+    return { kind: 'wander', x: rand(0, WORLD_W), y: rand(0, WORLD_H) };
+  }
+
+  // react to the active crisis: tech bots (and others sometimes) go fix things
+  if (room.crisis.active && (p.botPersona === 'tech' || Math.random() < 0.5)) {
+    const dt = nearestTile(room, p, (t) => t.disabled);
+    if (dt) return { kind: 'tile', ref: dt };
+  }
+
+  let tile = null;
+  const isFree = (t) => t.ownerId === null && !t.disabled;
+  const isEnemy = (t) => t.ownerId && t.ownerId !== p.id && !t.disabled && !tileImmune(room, t, now);
+  switch (p.botPersona) {
+    case 'saboteur':
+      tile = nearestTile(room, p, isEnemy) || nearestTile(room, p, isFree);
+      break;
+    case 'tech':
+      tile = nearestTile(room, p, (t) => t.disabled) || nearestTile(room, p, isFree);
+      break;
+    case 'builder':
+      tile = nearestTile(room, p, isFree) || nearestTile(room, p, isEnemy);
+      break;
+    default: { // collector: prioritise resources
+      const r = nearestResource(room, p);
+      if (r) return { kind: 'resource', ref: r };
+      tile = nearestTile(room, p, isFree);
+    }
+  }
+
+  // opportunistically grab a resource if it's clearly closer than the tile goal
+  const r = nearestResource(room, p);
+  if (r) {
+    const tileD = tile ? (tile.cx - p.x) ** 2 + (tile.cy - p.y) ** 2 : Infinity;
+    const resD = (r.x - p.x) ** 2 + (r.y - p.y) ** 2;
+    if (resD < tileD * 0.5) return { kind: 'resource', ref: r };
+  }
+  if (tile) return { kind: 'tile', ref: tile };
+  if (r) return { kind: 'resource', ref: r };
+  return { kind: 'wander', x: rand(0, WORLD_W), y: rand(0, WORLD_H) };
+}
+
 function botThink(room, p, now) {
-  let target = null;
-  let best = Infinity;
-  for (const res of room.resources) {
-    if (!res.active) continue;
-    const d = (res.x - p.x) ** 2 + (res.y - p.y) ** 2;
-    if (d < best) { best = d; target = res; }
+  // refresh goal periodically or when the current one is stale/spent
+  const goalStale =
+    !p.botGoal ||
+    now > p.botRetargetAt ||
+    (p.botGoal.kind === 'resource' && (!p.botGoal.ref || !p.botGoal.ref.active));
+  if (goalStale) {
+    p.botGoal = chooseBotGoal(room, p, now);
+    p.botRetargetAt = now + rand(900, 1900);
   }
-  if (!target && now > p.botRetargetAt) {
-    p.botTargetX = rand(0, WORLD_W);
-    p.botTargetY = rand(0, WORLD_H);
-    p.botRetargetAt = now + rand(2000, 5000);
-  }
-  const tx = target ? target.x : p.botTargetX;
-  const ty = target ? target.y : p.botTargetY;
-  const dx = tx - p.x;
-  const dy = ty - p.y;
+
+  const g = p.botGoal;
+  let tx = p.x, ty = p.y;
+  if (g.kind === 'resource' && g.ref) { tx = g.ref.x; ty = g.ref.y; }
+  else if (g.kind === 'tile' && g.ref) { tx = g.ref.cx; ty = g.ref.cy; }
+  else if (g.kind === 'wander') { tx = g.x; ty = g.y; }
+  const dx = tx - p.x, dy = ty - p.y;
   const len = Math.hypot(dx, dy) || 1;
   p.dir = { x: dx / len, y: dy / len };
 
+  // act on a relaxed, difficulty-scaled cadence (lower aggro => slower, less brutal)
   if (now > p.botActAt) {
-    p.botActAt = now + rand(1500, 4000);
-    tryAction(room, p, now);
+    const scale = 1 / Math.max(0.4, room.botAggro);
+    p.botActAt = now + rand(2200, 5200) * scale;
+    tryAction(room, p, now); // server re-resolves the nearest tile authoritatively
   }
-  // bots auto-resolve any pending upgrade offer (random pick)
-  if (p.currentOffer) {
-    const choice = p.currentOffer.choices[Math.floor(rand(0, p.currentOffer.choices.length))];
-    applyUpgrade(p, choice.id);
-    advanceOffer(p);
+}
+
+function botPickUpgrade(p, choices) {
+  const pref = PERSONA_UPGRADES[p.botPersona] || [];
+  for (const id of pref) {
+    if (choices.some((c) => c.id === id)) return id;
   }
+  return choices[Math.floor(rand(0, choices.length))].id;
 }
 
 function botVote(room, p) {
@@ -428,7 +532,7 @@ function offerUpgrade(room, p) {
   const choices = buildOffer(p);
   if (!choices.length) return; // everything maxed
   if (p.isBot) {
-    applyUpgrade(p, choices[Math.floor(rand(0, choices.length))].id);
+    applyUpgrade(p, botPickUpgrade(p, choices));
     return;
   }
   const offer = { choices };
@@ -543,9 +647,9 @@ function tryAction(room, p, now) {
       (tile.shieldUntil && now < tile.shieldUntil);
     if (!immune) {
       const victim = room.players.get(tile.ownerId);
-      const stealFrac = 0.25 * upCount(p, 'steal');
+      const stealFrac = STEAL_FRAC_PER_STACK * upCount(p, 'steal');
       if (stealFrac > 0 && victim) {
-        const stolen = Math.min(victim.score, Math.round(victim.score * stealFrac));
+        const stolen = Math.min(victim.score, Math.round(victim.score * stealFrac), STEAL_CAP);
         victim.score -= stolen;
         p.score += stolen;
       }
@@ -647,6 +751,9 @@ function startElection(room) {
   room.phase = 'voting';
   room.phaseEndsAt = Date.now() + VOTE_MS;
   room.votes = new Map();
+  // Freeze everyone: zero movement so no residual drift while the election runs
+  // (also makes resume clean — play only restarts once fresh input arrives).
+  for (const p of room.players.values()) p.dir = { x: 0, y: 0 };
   const ranked = rankedPlayers(room);
   // Humans ALWAYS run (even with low score); fill the rest with top bots.
   const humans = ranked.filter((p) => !p.isBot);
@@ -917,12 +1024,14 @@ function tickRoom(room) {
   const now = Date.now();
   if (room.phase === 'lobby') return; // no simulation while waiting
 
-  if (room.phase !== 'ended') {
+  if (room.phase === 'playing') {
+    // Movement + actions ONLY happen during normal play. During the election
+    // (voting + decree) every player is frozen server-side — see startElection
+    // (dirs zeroed) and the input/action handlers (rejected off-phase). This
+    // closes the exploit where a human could pre-position while bots idled.
     for (const p of room.players.values()) if (p.isBot) botThink(room, p, now);
     for (const p of room.players.values()) integrate(p);
-  }
 
-  if (room.phase === 'playing') {
     updateResources(room, now);
     updateCrisis(room, now);
     updateTileTimers(room, now);
@@ -1067,6 +1176,8 @@ io.on('connection', (socket) => {
     if (!room) return;
     const p = room.players.get(socket.id);
     if (!p) return;
+    // Server-enforced election freeze: movement is only accepted during play.
+    if (room.phase !== 'playing') { p.dir = { x: 0, y: 0 }; return; }
     const now = Date.now();
     if (now - p.lastInputAt < INPUT_MIN_INTERVAL_MS) return;
     p.lastInputAt = now;

@@ -89,9 +89,18 @@ No secrets or credentials are required or stored.
 - **Crisis (one type)** — `APAGÃO`: occasionally disables unowned tiles, giving
   REPARAR meaning.
 - **Election every ~70s of play**:
+  - **All players are frozen server-side during the election** (both the voting
+    window and the mayor's decree-selection): movement and the action key are
+    rejected for everyone — humans and bots alike — until the decree resolves and
+    normal play resumes. This closes an exploit where a human could pre-position
+    on a target tile while the bots idled. Non-mayor players see a
+    `👑 <Prefeito> está escolhendo o decreto...` waiting overlay; the voting
+    overlay covers the voting window. The mayor's pick has a timer + default so
+    nothing hangs.
   - Top candidates (by score) are shown; **every** player and bot casts a **real
     vote**; the server **tallies** all votes (real apuração — not first-click).
-    Ties broken deterministically (higher score, then lower id).
+    Ties broken deterministically (higher score, then lower id). Bots weight
+    their vote toward higher-reputation candidates.
   - The elected Mayor picks **one decree** (human gets a timed UI + default; bots
     pick randomly). Decrees last ~70s and affect others:
     - **Distribuição de Renda** — all resources worth 2x for everyone.
@@ -111,6 +120,29 @@ election candidate cards.
 > because the only starting action was *build*. Here the action is **contextual**
 > (decided by proximity), so anyone can naturally build / sabotage / repair from
 > the start, and identity emerges from what they actually did.
+
+## Scoring economy
+
+All points are awarded **server-side** (`server.js`). The HUD shows your total,
+**passive income rate** (`+N/s`), and a **?** breakdown panel. Floating numbers
+and toasts label the source explicitly; **passive trickle never spawns floaters**
+(so moving doesn't leave a "+pts" trail).
+
+| Source | Constant | Points |
+|--------|----------|--------|
+| Walk over resource | `RESOURCE_POINTS` | **+5** (+10 while **Distribuição de Renda** decree is active) |
+| Dominar quarteirão | `POINTS_DOMINATE` | **+15** (adjacent free tile from **Dominação em Massa** upgrade also +15) |
+| Sabotar quarteirão | `POINTS_SABOTAGE` | **+20** base |
+| Sabotar + steal upgrade | `STEAL_FRAC_PER_STACK` × stacks, `STEAL_CAP` | up to **15%/stack** of victim score, **max +60** per hit |
+| Reparar (disabled tile) | `POINTS_REPAIR` | **+12** |
+| Reparar (own tile, crisis) | `POINTS_REPAIR / 2` | **+6** |
+| Passive income | `TRICKLE_PER_TILE` | **+2/s per owned, non-disabled tile** (applied every tick at 20 Hz: `count × 2 × DT`) |
+
+**Does each house generate more points?** Yes — each quarteirão you **dominate**
+adds **+2 points per second** of passive income (`TRICKLE_PER_TILE`), as long as
+it is not disabled. Dominating also gives a one-time **+15** (`POINTS_DOMINATE`).
+More owned tiles = higher passive rate (linear, not compounding per tile beyond
+the sum).
 
 ## Interface & feel (neon-noir UI)
 
@@ -152,7 +184,10 @@ powers in play**. When a decree is applied, a **full-screen announcement**
 
 ### Juice & sound
 
-Floating score numbers, action particles, a tile-claim flash, and a short
+Action feedback spawns at the **target tile** (dominar / sabotar / reparar),
+resource pickups at the player, and **passive income is silent** (no floaters).
+Labels are explicit (`+15 DOMINAR`, `+20 SABOTAR`, `+5 COLETA`, etc.) with
+short HUD toasts. Action particles, a tile-claim flash, and a short
 **screen shake** when you sabotage or get sabotaged. A tiny **WebAudio** synth
 (no audio files shipped) plays collect / dominar / sabotar / reparar / election /
 decree / victory cues, with a **mute toggle** (top-left, persisted in
@@ -175,8 +210,9 @@ watermark, gold-highlighted champion, clean typography, and a prominent
 Players earn **XP** from their actions (collect / dominar / sabotar / reparar)
 and **level up** server-side. On level-up the client shows a brief, non-blocking
 **choice of 1 of 3** upgrades (a random subset from the pool, so picks feel
-fresh). The game keeps running for everyone else; bots auto-pick randomly so they
-stay competitive. There is **no casting time** and the system is **not** just
+fresh). The game keeps running for everyone else; bots pick upgrades coherently
+with their persona (see Bots below) so they stay competitive. There is **no
+casting time** and the system is **not** just
 "reduce cooldown" — upgrades change *how* you play while preserving the
 contextual build/sabotage/repair design (you're never locked into one verb).
 
@@ -186,13 +222,32 @@ Upgrade pool (all applied server-side, with stack caps to avoid snowball):
 | -------------------------- | ------------------------------------------------------- | --- |
 | **Raio de Ação**           | +45 action range each                                   | 3   |
 | **Dominação em Massa**     | Dominar also claims one free adjacent tile              | 1   |
-| **Sabotador Profissional** | Sabotar also steals 25% of the owner's points each      | 2   |
+| **Sabotador Profissional** | Sabotar also steals 15% of the owner's points (cap +60) | 2   |
 | **Engenharia Resiliente**  | Tiles you repair become immune to sabotage for a while  | 1   |
 | **Pé-de-Vento**            | +12% movement speed each                                | 3   |
 | **Reflexos Rápidos**       | −15% action cooldown each (the *only* cooldown option)  | 1   |
 
 Current **level** and an **XP bar** are shown in the HUD; level also appears in
 the leaderboard, election cards, and the end-screen story.
+
+## Bots (AI & difficulty)
+
+Bots are designed to feel like players, not machines:
+
+- **Personas.** Each bot gets a tendency — `builder` (dominar), `saboteur`
+  (sabotar enemy tiles), `tech` (repair, especially during a crisis), or
+  `collector` (resources). It drives both **target selection** (pick the nearest
+  *relevant* tile/resource instead of random) and **upgrade picks** (a saboteur
+  favors `steal`, a tech favors `repairshield`/`cooldown`, etc.).
+- **Sensible targeting.** Bots head to the nearest actionable target for their
+  persona, avoid uselessly re-claiming their own tiles, skip immune/shielded
+  tiles, grab a resource if it's clearly on the way, and **react to the active
+  crisis** (repair-leaning bots go fix disabled blocks).
+- **Less punishing.** A difficulty dial (`botAggro`, **0.7 in solo/bots mode**,
+  0.85 otherwise) scales a **slower, jittered action cadence** and adds
+  **imperfect targeting** (they sometimes wander/collect), so a lone human can
+  compete and have fun without the bots feeling relentless. They are still
+  active — not a walkover.
 
 ## Salas / lobby
 
@@ -269,11 +324,18 @@ level/XP HUD and the cooldown countdown without ever owning that state.
 - **No mid-match join.** Joining is only allowed while a room is in its lobby;
   joining an in-progress match is rejected with a message (you can join the next
   rematch). Adding live mid-match join is a possible next step.
-- **Bot AI is intentionally simple** (seek nearest resource, occasional action,
-  weighted-random voting, random upgrade picks). Good enough to feel alive.
+- **Bot AI is persona-driven but still lightweight** (greedy nearest-target
+  selection, crisis reaction, persona-weighted upgrades/votes, difficulty dial).
+  No pathfinding or long-term planning — good enough to feel like players.
 - **No anti-cheat beyond authority + basic rate limiting.** Fine for a demo.
-- **Upgrade balance is first-pass.** Stacks are capped to avoid runaway snowball,
-  but values likely need tuning with real playtests.
+- **Balance is first-pass (light review only).** After playtest feedback that
+  "sabotage may out-scale", a quick math review found the `Sabotador
+  Profissional` **steal** upgrade was the clear outlier: it transferred **25% of
+  the victim's *entire* score per hit, uncapped**, so sabotaging a leader created
+  a huge two-way swing every ~4s — out-scaling dominar (+15 +trickle) and reparar
+  (+12). Conservative change: steal reduced to **15%/stack and capped at +60
+  points per sabotage** (base action points 15/20/12 left untouched — they looked
+  roughly balanced and there's no telemetry yet). Revisit with real data.
 - **Share = clipboard copy only.** Next step: deep links / prefilled social share
   and server-side instrumentation of the share event (currently only match-end is
   logged).
